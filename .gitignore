@@ -57,3 +57,7 @@ data/
 *.csv
 *.parquet
 
+# md (except README.md)
+*.md
+!README.md
+
