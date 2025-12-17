@@ -101,11 +101,19 @@ def main():
     # 打印统计信息
     logger.info("Region selection completed successfully")
     logger.info("Region statistics:")
+    import numpy as np
     for band in selector.bands:
         if band in region_data and "dimu_mass" in region_data[band]:
-            n_events = len(region_data[band]["dimu_mass"])
-            mass_mean = region_data[band]["dimu_mass"].mean()
-            mass_std = region_data[band]["dimu_mass"].std()
+            mass_array = region_data[band]["dimu_mass"]
+            # 确保是 numpy array（如果是 awkward array，转换为 numpy）
+            if hasattr(mass_array, 'to_numpy'):
+                mass_array = mass_array.to_numpy()
+            elif not isinstance(mass_array, np.ndarray):
+                mass_array = np.array(mass_array)
+            
+            n_events = len(mass_array)
+            mass_mean = np.mean(mass_array)
+            mass_std = np.std(mass_array)
             logger.info(
                 f"  {band}: {n_events} events, "
                 f"mass = {mass_mean:.3f} ± {mass_std:.3f} GeV"

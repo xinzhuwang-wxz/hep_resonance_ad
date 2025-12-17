@@ -36,78 +36,57 @@ def get_bins(
          plot_centers_all, plot_centers_SR, plot_centers_SB)
     """
     if binning == "linear":
-        # SR binning
-        plot_bins_SR = np.linspace(SR_left, SR_right, num_bins_SR + 1)
+        # SR binning（与原始代码一致：num_bins_SR 个点，即 num_bins_SR-1 个 bins）
+        plot_bins_SR = np.linspace(SR_left, SR_right, num_bins_SR)
         plot_centers_SR = 0.5 * (plot_bins_SR[1:] + plot_bins_SR[:-1])
         width = plot_bins_SR[1] - plot_bins_SR[0]
         
-        # SBL binning（向左扩展）
+        # SBL binning（向左扩展，与原始代码一致）
         plot_bins_left = np.arange(SR_left, SB_left - width, -width)[::-1]
         if plot_bins_left[0] < SB_left:
             plot_bins_left = plot_bins_left[1:]
         plot_centers_left = 0.5 * (plot_bins_left[1:] + plot_bins_left[:-1])
         
-        # SBH binning（向右扩展）
+        # SBH binning（向右扩展，与原始代码一致）
         plot_bins_right = np.arange(SR_right, SB_right + width, width)
         if plot_bins_right[-1] > SB_right:
             plot_bins_right = plot_bins_right[:-1]
         plot_centers_right = 0.5 * (plot_bins_right[1:] + plot_bins_right[:-1])
         
     elif binning == "log":
-        # SR binning（对数）
-        plot_bins_SR = np.logspace(
-            np.log10(SR_left), np.log10(SR_right), num_bins_SR + 1
-        )
-        plot_centers_SR = np.array(
-            [
-                np.sqrt(plot_bins_SR[i] * plot_bins_SR[i + 1])
-                for i in range(len(plot_bins_SR) - 1)
-            ]
-        )
-        ratio = plot_bins_SR[1] / plot_bins_SR[0]
+        # SR binning（对数，与原始代码一致：num_bins_SR 个点）
+        plot_bins_SR = np.logspace(np.log10(SR_left), np.log10(SR_right), num_bins_SR)
+        plot_centers_SR = np.array([np.sqrt(plot_bins_SR[i]*plot_bins_SR[i+1]) for i in range(len(plot_bins_SR)-1)])
+        ratio = plot_bins_SR[1]/plot_bins_SR[0]
         
-        # SBL binning
+        # SBL binning（与原始代码一致）
         current_endpoint = plot_bins_SR[0]
         plot_bins_left = [current_endpoint]
         while current_endpoint > SB_left:
-            next_endpoint = current_endpoint / ratio
+            next_endpoint = current_endpoint/ratio
             plot_bins_left.insert(0, next_endpoint)
             current_endpoint = next_endpoint
         if plot_bins_left[0] < SB_left:
             plot_bins_left = plot_bins_left[1:]
-        plot_centers_left = np.array(
-            [
-                np.sqrt(plot_bins_left[i] * plot_bins_left[i + 1])
-                for i in range(len(plot_bins_left) - 1)
-            ]
-        )
+        plot_centers_left = np.array([np.sqrt(plot_bins_left[i]*plot_bins_left[i+1]) for i in range(len(plot_bins_left)-1)])
         
-        # SBH binning
+        # SBH binning（与原始代码一致）
         current_endpoint = plot_bins_SR[-1]
         plot_bins_right = [current_endpoint]
         while current_endpoint < SB_right:
-            next_endpoint = current_endpoint * ratio
+            next_endpoint = current_endpoint*ratio
             plot_bins_right.append(next_endpoint)
             current_endpoint = next_endpoint
         if plot_bins_right[-1] > SB_right:
             plot_bins_right = plot_bins_right[:-1]
-        plot_centers_right = np.array(
-            [
-                np.sqrt(plot_bins_right[i] * plot_bins_right[i + 1])
-                for i in range(len(plot_bins_right) - 1)
-            ]
-        )
+        plot_centers_right = np.array([np.sqrt(plot_bins_right[i]*plot_bins_right[i+1]) for i in range(len(plot_bins_right)-1)])
     else:
         raise ValueError(f"Unknown binning type: {binning}")
     
-    # 合并所有 bins
-    plot_centers_all = np.concatenate(
-        (plot_centers_left, plot_centers_SR, plot_centers_right)
-    )
+    # 合并所有 bins（与原始代码完全一致）
+    plot_centers_all = np.concatenate((plot_centers_left, plot_centers_SR, plot_centers_right))
     plot_centers_SB = np.concatenate((plot_centers_left, plot_centers_right))
-    plot_bins_all = np.concatenate(
-        [plot_bins_left[:-1], plot_bins_SR, plot_bins_right[1:]]
-    )
+    plot_bins_all = np.concatenate([plot_bins_left[:-1], plot_bins_SR, plot_bins_right[1:]])
     
     return (
         plot_bins_all,

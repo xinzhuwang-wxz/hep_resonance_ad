@@ -14,6 +14,22 @@ from resonance_ad.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+# 背景拟合函数（与原始代码完全一致）
+def bkg_fit_cubic(x, a, b, c, d):
+    """三次多项式拟合"""
+    return a + b*x + c*x**2 + d*x**3
+
+
+def bkg_fit_quintic(x, a, b, c, d, e, f):
+    """五次多项式拟合"""
+    return a + b*x + c*x**2 + d*x**3 + e*x**4 + f*x**5
+
+
+def bkg_fit_septic(x, a, b, c, d, e, f, g, h):
+    """七次多项式拟合"""
+    return a + b*x + c*x**2 + d*x**3 + e*x**4 + f*x**5 + g*x**6 + h*x**7
+
+
 def parametric_fit(x: np.ndarray, *theta) -> np.ndarray:
     """
     多项式拟合函数
@@ -190,7 +206,7 @@ class BumpHunter:
     
     def hunt_bump(
         self,
-        SR_data: np.ndarray,
+        SR_masses: np.ndarray,
         SR_scores: np.ndarray,
         bins_SR: np.ndarray,
         background_expectation: np.ndarray,
@@ -199,7 +215,7 @@ class BumpHunter:
         执行 bump hunt
         
         Args:
-            SR_data: Signal region 数据
+            SR_masses: Signal region 物理质量值（1D array）
             SR_scores: Signal region anomaly scores
             bins_SR: Signal region bin 边界
             background_expectation: 每个 bin 的背景期望值
@@ -208,7 +224,10 @@ class BumpHunter:
             包含结果的字典
         """
         # 计算每个 bin 的观测值和期望值
-        observed, _ = np.histogram(SR_data[:, -1], bins=bins_SR)
+        # SR_masses 应该是 1D array，直接使用
+        if SR_masses.ndim > 1:
+            SR_masses = SR_masses.flatten()
+        observed, _ = np.histogram(SR_masses, bins=bins_SR)
         
         # 计算显著性（简化版本）
         significances = []

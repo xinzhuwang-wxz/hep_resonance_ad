@@ -28,7 +28,7 @@ hep_resonance_ad/
 ├── scripts/             # 可执行脚本
 │   ├── 01_load_data.py
 │   ├── 02_define_regions.py
-│   └── 05_generate_paper_figures.py
+│   └── generate_figures.py
 └── outputs/             # 输出目录（自动创建）
 ```
 
@@ -101,7 +101,7 @@ python scripts/evaluate.py --config configs/upsilon_reproduction.yaml --seed 42
 ### 6. 生成论文图
 
 ```bash
-python scripts/generate_paper_figures.py --config configs/upsilon_reproduction.yaml --evaluation-results outputs/{analysis_name}/evaluation/bump_hunt_results_seed42.pkl
+python scripts/generate_figures.py --config configs/upsilon_reproduction.yaml --evaluation-results outputs/{analysis_name}/evaluation/bump_hunt_results_seed42.pkl
 ```
 
 这将生成：

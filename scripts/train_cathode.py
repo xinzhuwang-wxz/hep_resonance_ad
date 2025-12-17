@@ -79,9 +79,39 @@ def main():
     logger.info(f"SBH data shape: {SBH_data.shape}")
     logger.info(f"SB data shape: {SB_data.shape}")
     
+    # 预处理数据（按照原代码的方式）
+    logger.info("Preprocessing data...")
+    preprocessor = DataPreprocessor(cushion=0.02)  # 与原代码一致
+    
+    # 准备用于预处理的字典（从 SB 数据中提取）
+    SB_data_dict = {}
+    for i, feat in enumerate(feature_set):
+        SB_data_dict[feat] = SB_data[:, i]
+    
+    # 预处理 SB 数据以计算预处理参数
+    SB_processed, preproc_info = preprocessor.preprocess_features(
+        SB_data_dict, feature_set, mass_key="dimu_mass"
+    )
+    
+    # 应用预处理到所有区域的数据
+    banded_data_processed = {}
+    for band in bands:
+        if band in banded_data:
+            banded_data_processed[band] = preprocessor.apply_preprocessing(
+                banded_data[band],
+                feature_set,
+                preproc_info,
+                mass_scaler=preproc_info["dimu_mass"]["scaler"],
+                mass_key="dimu_mass",
+            )
+    
+    # 使用预处理后的数据
+    SBL_data_processed = banded_data_processed["SBL"]
+    SBH_data_processed = banded_data_processed["SBH"]
+    
     # 训练/验证分割
-    SBL_train, SBL_val = train_test_split(SBL_data, test_size=0.2, random_state=args.seed)
-    SBH_train, SBH_val = train_test_split(SBH_data, test_size=0.2, random_state=args.seed)
+    SBL_train, SBL_val = train_test_split(SBL_data_processed, test_size=0.2, random_state=args.seed)
+    SBH_train, SBH_val = train_test_split(SBH_data_processed, test_size=0.2, random_state=args.seed)
     
     train_data = np.vstack([SBL_train, SBH_train])
     val_data = np.vstack([SBL_val, SBH_val])
@@ -129,6 +159,36 @@ def main():
     # 保存特征集合信息
     with open(save_dir / "feature_set.txt", "w") as f:
         f.write(f"feature_set = {feature_set}\n")
+    
+    # 保存预处理信息（与原代码一致）
+    processed_data_dir = config.output_dir / "processed_data"
+    processed_data_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 保存 preprocessing_info（与原代码格式一致）
+    preprocessing_info = {}
+    mass_scaler = None
+    for feat in feature_set:
+        if feat == "dimu_mass":
+            mass_scaler = preproc_info[feat]["scaler"]
+        else:
+            preprocessing_info[feat] = {
+                "mean": preproc_info[feat]["mean"],
+                "std": preproc_info[feat]["std"],
+                "min": preproc_info[feat]["min"],
+                "max": preproc_info[feat]["max"],
+            }
+    
+    bootstrap_seed = args.seed  # 使用 seed 作为 bootstrap ID
+    preprocessing_info_path = processed_data_dir / f"preprocessing_info_bootstrap{bootstrap_seed}"
+    mass_scaler_path = processed_data_dir / f"mass_scaler_bootstrap{bootstrap_seed}"
+    
+    logger.info(f"Saving preprocessing info to: {preprocessing_info_path}")
+    with open(preprocessing_info_path, "wb") as f:
+        pickle.dump(preprocessing_info, f)
+    
+    logger.info(f"Saving mass scaler to: {mass_scaler_path}")
+    with open(mass_scaler_path, "wb") as f:
+        pickle.dump(mass_scaler, f)
     
     # 开始训练
     logger.info("Starting training...")

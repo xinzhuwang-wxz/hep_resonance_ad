@@ -19,6 +19,8 @@ def compute_loss_over_batches(model, dataloader, device, correct_logit=None):
     """
     计算整个数据集的平均损失
     
+    与原始代码对齐：处理NaN和异常值，使用累积平均方式
+    
     Args:
         model: CATHODE 模型
         dataloader: 数据加载器
@@ -29,34 +31,68 @@ def compute_loss_over_batches(model, dataloader, device, correct_logit=None):
         (corrected_loss, uncorrected_loss) 或 (loss, None)
     """
     model.eval()
-    total_loss = 0
-    total_samples = 0
-    
     with torch.no_grad():
-        for batch_data in dataloader:
+        if correct_logit is not None:
+            corrected_now_loss = 0.
+        now_loss = 0
+        n_nans = 0
+        n_highs = 0
+        
+        for batch_idx, batch_data in enumerate(dataloader):
+            # DataLoader 返回 tuple，需要解包
+            if isinstance(batch_data, (tuple, list)):
+                batch_data = batch_data[0]
             batch_data = batch_data.to(device).float()
             data = batch_data[:, :-1]
             cond_data = torch.reshape(batch_data[:, -1], (-1, 1))
             
-            loss = -model.log_probs(data, cond_data)
-            total_loss += loss.sum().item()
-            total_samples += loss.size(0)
-    
-    avg_loss = total_loss / total_samples
-    
-    if correct_logit is not None:
-        # 校正损失（用于 no_logit 情况）
-        # 这里简化处理，实际需要更复杂的计算
-        uncorrected_loss = avg_loss
-        corrected_loss = avg_loss  # 简化版本
-        return corrected_loss, uncorrected_loss
-    else:
-        return avg_loss, None
+            loss_vals_raw = model.log_probs(data, cond_data)
+            
+            # 检查NaN（原始代码的行为）
+            if torch.isnan(loss_vals_raw).any():
+                logger.warning(f"Found NaN in loss_vals_raw at batch {batch_idx}")
+                logger.warning(f"Problematic data: {batch_data[torch.isnan(loss_vals_raw).reshape(-1,)]}")
+            
+            loss_vals = loss_vals_raw.flatten()
+            
+            if correct_logit is not None:
+                mask = (data > 0) & (data < 1)
+                data_masked = data[mask.all(dim=1)]
+                loss_vals_raw_masked = loss_vals_raw[mask.all(dim=1)]
+                corrected_loss_vals_raw = loss_vals_raw_masked.flatten() + \
+                    torch.log(correct_logit * data_masked * (1. - data_masked)).sum(dim=1)
+                corrected_loss_vals = corrected_loss_vals_raw.flatten()
+            
+            # 统计并过滤NaN和异常值（与原始代码对齐）
+            n_nans += torch.isnan(loss_vals).sum().item()
+            n_highs += (torch.abs(loss_vals) >= 1000).sum().item()
+            loss_vals = loss_vals[~torch.isnan(loss_vals)]
+            loss_vals = loss_vals[torch.abs(loss_vals) < 1000]
+            
+            loss = -loss_vals.mean()
+            loss = loss.item()
+            
+            if correct_logit is not None:
+                corrected_now_loss -= corrected_loss_vals.mean().item()
+                corrected_end_loss = corrected_now_loss / (batch_idx + 1)
+            
+            now_loss += loss
+            end_loss = now_loss / (batch_idx + 1)
+        
+        if n_nans > 0 or n_highs > 0:
+            logger.warning(f"Loss statistics: n_nans = {n_nans}, n_highs = {n_highs}")
+        
+        if correct_logit is not None:
+            return (corrected_end_loss, end_loss)
+        else:
+            return (end_loss,)
 
 
 def train_epoch(model, optimizer, dataloader, device, verbose=True, data_std=None):
     """
     训练一个 epoch
+    
+    与原始代码对齐：包括BatchNormFlow的momentum处理和corrected_loss计算
     
     Args:
         model: CATHODE 模型
@@ -70,28 +106,35 @@ def train_epoch(model, optimizer, dataloader, device, verbose=True, data_std=Non
         (corrected_loss, uncorrected_loss) 或 (loss, None)
     """
     model.train()
+    train_loss = 0
     train_loss_avg = []
-    corrected_train_loss_avg = []
+    if data_std is not None:
+        corrected_train_loss_avg = []
     
     if verbose:
         pbar = tqdm(total=len(dataloader.dataset), desc="Training")
     
     for batch_idx, batch_data in enumerate(dataloader):
+        # DataLoader 返回 tuple，需要解包
+        if isinstance(batch_data, (tuple, list)):
+            batch_data = batch_data[0]
         batch_data = batch_data.to(device).float()
         data = batch_data[:, :-1]
         cond_data = torch.reshape(batch_data[:, -1], (-1, 1))
         
         optimizer.zero_grad()
         loss = -model.log_probs(data, cond_data)
-        
+        train_loss += loss.mean().item()
         train_loss_avg.extend(loss.tolist())
         
         if data_std is not None:
-            # 校正损失（简化版本）
+            # 校正损失（与原始代码对齐）
             mask = (data > 0) & (data < 1)
-            if mask.any():
-                corrected_loss = loss[mask.all(dim=1)]
-                corrected_train_loss_avg.extend(corrected_loss.tolist())
+            data_masked = data[mask.all(dim=1)]
+            loss_masked = loss[mask.all(dim=1)]
+            corrected_loss = (loss_masked.flatten() - 
+                            torch.log(data_std * data_masked * (1. - data_masked)).sum(dim=1)).flatten()
+            corrected_train_loss_avg.extend(corrected_loss.tolist())
         
         loss.mean().backward()
         
@@ -101,19 +144,46 @@ def train_epoch(model, optimizer, dataloader, device, verbose=True, data_std=Non
         optimizer.step()
         
         if verbose:
-            pbar.update(batch_data.size(0))
-            pbar.set_postfix({'loss': f'{loss.mean().item():.4f}'})
+            pbar.update(data.size(0))
+            pbar.set_postfix({'loss': f'{-train_loss / (batch_idx + 1):.6f}'})
     
     if verbose:
         pbar.close()
     
-    avg_loss = np.mean(train_loss_avg)
+    # BatchNormFlow的momentum处理（原始代码的关键部分）
+    from resonance_ad.models.flows import BatchNormFlow
+    has_batch_norm = False
+    for module in model.modules():
+        if isinstance(module, BatchNormFlow):
+            has_batch_norm = True
+            module.momentum = 0
     
-    if data_std is not None and corrected_train_loss_avg:
-        corrected_avg_loss = np.mean(corrected_train_loss_avg)
-        return corrected_avg_loss, avg_loss
+    if has_batch_norm:
+        # 对整个数据集做一次forward pass（原始代码的注释说这对BN很重要）
+        with torch.no_grad():
+            # 获取整个数据集
+            if hasattr(dataloader.dataset, 'tensors'):
+                # TensorDataset
+                loc_data = dataloader.dataset.tensors[0].to(device).float()
+            elif isinstance(dataloader.dataset, np.ndarray):
+                # 如果直接传递numpy数组（原始代码的方式）
+                loc_data = torch.tensor(dataloader.dataset, device=device).float()
+            else:
+                # 其他情况，尝试直接使用
+                loc_data = torch.tensor(dataloader.dataset, device=device).float()
+            model(loc_data[:, :-1], torch.reshape(loc_data[:, -1], (-1, 1)))
+        
+        # 恢复momentum
+        for module in model.modules():
+            if isinstance(module, BatchNormFlow):
+                module.momentum = 1
+    
+    # 计算平均损失（与原始代码对齐）
+    if data_std is not None:
+        return (np.array(corrected_train_loss_avg).flatten().mean(),
+                np.array(train_loss_avg).flatten().mean())
     else:
-        return avg_loss, None
+        return (np.array(train_loss_avg).flatten().mean(),)
 
 
 def train_cathode(

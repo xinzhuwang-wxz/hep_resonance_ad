@@ -23,10 +23,10 @@ analysis_keywords:
 # 窗口定义（质量范围）
 window_definitions:
   upsilon:
-    SB_left: 5.0
-    SR_left: 9.0
+    SB_left: 5
+    SR_left: 9
     SR_right: 10.6
-    SB_right: 16.0
+    SB_right: 16
   eta:
     SB_left: 0.3
     SR_left: 0.525
@@ -36,27 +36,24 @@ window_definitions:
 # 特征集合定义
 feature_sets:
   # 单 muon 特征
+  # 注意：dimu_mass 会在代码中自动添加作为条件（context）
   single_0:
     - mu0_pt
     - mu1_pt
     - mu0_eta
     - mu1_eta
-    - dimu_mass
   
   single_1:
     - mu0_iso04
     - mu1_iso04
-    - dimu_mass
   
   single_2:
     - mu0_pt
     - mu1_pt
-    - dimu_mass
   
   single_3:
     - mu0_ip3d
     - mu1_ip3d
-    - dimu_mass
   
   # Dimuon 特征
   double_0:
@@ -64,40 +61,66 @@ feature_sets:
     - dimu_eta
     - mumu_deltaR
     - mumu_deltapT
-    - dimu_mass
   
   double_1:
     - dimu_pt
     - dimu_eta
-    - dimu_mass
   
   double_2:
     - mumu_deltaR
     - mumu_deltapT
-    - dimu_mass
   
   # 混合特征
   mix_0:
     - dimu_pt
     - mu0_iso04
     - mu1_iso04
-    - dimu_mass
   
   mix_2:
     - dimu_pt
     - mu0_ip3d
     - mu1_ip3d
-    - dimu_mass
 
 # 数据加载配置
 data:
   data_id: "skimmed_data_2016H_30555"  # 或从文件列表读取
   require_jet: false
   charge_filter: "OS"  # "OS" 或 "SS" 或 null
+  # 文件列表（与原始代码 01_concatenate_and_filter_data.py 中的 files_dict 一致）
+  file_indices:
+    skimmed_data_2016H_30555:
+      - '127C2975-1B1C-A046-AABF-62B77E757A86'
+      - '183BFB78-7B5E-734F-BBF5-174A73020F89'
+      - '1BE226A3-7A8D-1B43-AADC-201B563F3319'
+      - '1DE780E2-BCC2-DC48-815D-9A97B2A4A2CD'
+      - '21DA4CE5-4E50-024F-9CE1-50C77254DD4E'
+      - '2C6A0345-8E2E-9B41-BB51-DB56DFDFB89A'
+      - '3676E287-A650-8F44-BBCB-3B8556966406'
+      - '411A019C-7058-FD42-AD50-DE74433E6859'
+      - '46A8960A-E58F-4648-9C12-2708FE7C12FB'
+      - '4F0B53A7-6440-924B-AF48-B5B61D3CE23F'
+      - '790F8A75-8256-3B46-8209-850DE0BE3C77'
+      - '7F53D1DE-439E-AD48-871E-D3458DABA798'
+      - '8A696857-C147-B04A-905A-F85FB76EDA23'
+      - '8B253755-51F2-CB49-A4B6-C79637CAE23F'
+      - '9528EA75-1C0B-9047-A9A3-6A47564F7A98'
+      - 'A6605227-0B58-864E-8422-B8990D18F622'
+      - 'B2DC29E0-8679-1D4F-A5AE-E7D0284A20D4'
+      - 'B450B2B3-BEF8-8C43-82BF-7AD0EF2EA7EA'
+      - 'B7AA7F04-5D5F-514A-83A6-9A275198852C'
+      - 'B93B57BF-4239-A049-9531-4C542C370185'
+      - 'C4558F81-9F2C-1349-B528-6B9DD6838D6D'
+      - 'C8CFC890-D4B8-8A4F-8699-C6ACCDF1620A'
+      - 'CAA285FF-7A12-F945-9183-DC7042178535'
+      - 'CD267D88-E57D-3B44-AC45-0712E2E12B87'
+      - 'E7C51551-7A75-5C41-B468-46FB922F36A9'
+      - 'EBC200F4-C06F-CE45-BAAA-7CAECDD3076F'
+      - 'EEB2FE3F-7CF3-BF4A-9F70-3F89FACE698E'
+      - 'F5E234F9-1E9C-0042-B395-AB6407E4A336'
 
 # 预处理配置
 preprocessing:
-  cushion: 0.01
+  cushion: 0.02  # 与原始代码一致
   bootstrap_seed: 42
 
 # 区域选择配置
@@ -113,13 +136,13 @@ model:
   
 # 训练配置
 training:
-  feature_set: "mix_0"  # 使用哪个特征集合
+  feature_set: "mix_2"  # 使用哪个特征集合（与原始代码一致）
   train_samesign: false
-  batch_size: 1024
-  num_epochs: 100
-  learning_rate: 0.00075
-  weight_decay: 0.000001
-  seeds: [6, 7, 8, 9, 10]  # 多个随机种子用于稳定性测试
+  batch_size: 256  # 与原始代码默认值一致
+  num_epochs: 400  # 与原始代码默认值一致
+  learning_rate: 0.00075  # 来自 CATHODE_8.yml
+  weight_decay: 0.000001  # 来自 CATHODE_8.yml
+  seeds: [1, 2, 3, 4, 5]  # 与原始代码一致
 
 # 评估配置
 evaluation:

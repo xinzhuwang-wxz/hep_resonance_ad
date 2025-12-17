@@ -49,7 +49,7 @@ python scripts/evaluate.py --config configs/upsilon_reproduction.yaml
 ### 6. 生成论文图
 
 ```bash
-python scripts/generate_paper_figures.py --config configs/upsilon_reproduction.yaml
+python scripts/generate_figures.py --config configs/upsilon_reproduction.yaml
 ```
 
 生成论文中的所有关键图。

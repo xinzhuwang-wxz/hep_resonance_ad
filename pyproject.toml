@@ -25,7 +25,16 @@ dependencies = [
     "pyyaml>=6.0",
     "torch>=1.11.0",
     "awkward>=1.8.0",
+    "dask-awkward>=0.2.0",  # 用于加载 pickle 文件中的 awkward arrays
     "uproot>=4.0.0",
+    "scikit-learn>=1.0.0",  # sklearn (scikit_learn in requirements.txt)
+    "tqdm>=4.60.0",  # 进度条
+    "nflows>=0.14",  # normalizing flows
+    "zfit>=0.17.0",  # 用于拟合（需要 tensorflow）
+    "tensorflow>=2.13.0",  # zfit 的依赖
+    "xgboost>=1.5.0",  # 用于 ROC 曲线评估
+    "numba>=0.56.0",  # 用于 CUDA 加速（可选，但原始代码使用）
+    "numdifftools>=0.9.0",  # 数值微分工具（原始代码使用）
 ]
 
 [project.optional-dependencies]

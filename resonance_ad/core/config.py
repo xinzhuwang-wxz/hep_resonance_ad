@@ -52,10 +52,19 @@ class Config:
         return self.window_definitions[particle]
     
     def get_feature_set(self, name: str) -> list:
-        """获取指定名称的特征集合"""
+        """
+        获取指定名称的特征集合
+        
+        注意：dimu_mass 会自动添加到最后作为条件（context），
+        这与原始代码的设计一致。
+        """
         if name not in self.feature_sets:
             raise ValueError(f"Feature set '{name}' not found")
-        return self.feature_sets[name]
+        feature_set = self.feature_sets[name].copy()
+        # 自动添加 dimu_mass 作为最后一个特征（条件）
+        if "dimu_mass" not in feature_set:
+            feature_set.append("dimu_mass")
+        return feature_set
 
 
 def load_config(config_path: str | Path) -> Config:

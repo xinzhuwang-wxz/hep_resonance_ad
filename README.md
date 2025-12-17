@@ -47,7 +47,7 @@ python scripts/train_cathode.py --config configs/upsilon_reproduction.yaml --see
 python scripts/evaluate.py --config configs/upsilon_reproduction.yaml --seed 42
 
 # 生成论文图
-python scripts/generate_paper_figures.py --config configs/upsilon_reproduction.yaml \
+python scripts/generate_figures.py --config configs/upsilon_reproduction.yaml \
     --evaluation-results outputs/{analysis_name}/evaluation/bump_hunt_results_seed42.pkl
 ```
 
