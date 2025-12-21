@@ -29,6 +29,45 @@ hep_resonance_ad/
 └── tests/               # 测试代码
 ```
 
+## 数据下载
+
+项目使用来自 [Zenodo](https://zenodo.org/records/14618719) 的预处理数据集。
+
+### 下载数据
+
+使用提供的下载脚本从Zenodo下载所有数据文件：
+
+```bash
+# 下载所有数据文件到默认目录 (data/precompiled_data/skimmed_data_2016H_30555/)
+python scripts/download_data.py
+
+# 指定数据ID
+python scripts/download_data.py --data-id skimmed_data_2016H_30555
+
+# 只下载muon文件
+python scripts/download_data.py --filter mu
+
+# 只下载jet文件
+python scripts/download_data.py --filter jet
+
+# 跳过MD5校验（加快下载速度）
+python scripts/download_data.py --skip-md5
+```
+
+**注意**：
+- 总数据量约 **31.2 GB**（56个文件）
+- 脚本支持**断点续传**，如果下载中断可以重新运行继续下载
+- 默认会进行**MD5校验**确保文件完整性
+- 已存在的文件会自动跳过（如果大小和MD5匹配）
+
+下载脚本功能：
+- ✅ 使用Zenodo API自动获取文件列表
+- ✅ 断点续传支持
+- ✅ MD5校验确保文件完整性
+- ✅ 进度条显示下载进度
+- ✅ 自动重试失败的下载
+- ✅ 支持过滤下载（只下载muon或jet文件）
+
 ## 快速开始
 
 详细使用说明请参考 [QUICKSTART.md](QUICKSTART.md)

@@ -14,7 +14,7 @@ from pathlib import Path
 from resonance_ad.core.config import load_config
 from resonance_ad.core.logging import setup_logging, get_logger
 from resonance_ad.models import DensityEstimator
-from resonance_ad.analysis import BumpHunter
+from resonance_ad.analysis import BumpHunter, BDTTrainer
 from resonance_ad.analysis.bump_hunt import fit_background, parametric_fit
 from resonance_ad.analysis.significance import calculate_test_statistic
 from resonance_ad.data import assemble_banded_datasets
@@ -182,7 +182,78 @@ def main():
     SR_data = banded_data["SR"]
     SR_scores = all_scores["SR"]
     SR_masses = all_masses_physical["SR"]  # 使用物理值用于显著性计算
-    
+
+    # ===== Step 3: 训练BDT分类器（论文中的likelihood ratio学习）=====
+    logger.info("Step 3: Training BDT classifier for likelihood ratio learning...")
+
+    # 获取BDT配置
+    bdt_config = config.raw_config.get("bdt", {})
+
+    # 准备SR数据用于BDT训练
+    # 需要生成SR中的背景样本（使用训练好的flow模型）
+    logger.info("Generating background samples in SR using trained flow model...")
+
+    # 从SB数据采样来生成SR背景（因为flow是在SB上训练的）
+    SB_data_for_generation = banded_data["SBL"]  # 使用左侧SB数据
+    n_samples_to_generate = len(SR_data)  # 生成与SR数据相同数量的背景样本
+
+    # 使用mass scaler转换质量到训练时的范围
+    sb_masses_scaled = mass_scaler.transform(SB_data_for_generation[:, -1].reshape(-1, 1)).flatten()
+
+    # 生成背景样本
+    flow_generated_samples = []
+    batch_size = 1000
+
+    for i in range(0, n_samples_to_generate, batch_size):
+        batch_end = min(i + batch_size, n_samples_to_generate)
+        current_batch_size = batch_end - i
+
+        # 采样质量（从SB质量分布中采样）
+        sampled_masses = np.random.choice(sb_masses_scaled, current_batch_size, replace=True)
+
+        # 条件输入（质量）
+        cond_inputs = torch.FloatTensor(sampled_masses.reshape(-1, 1)).to(device)
+
+        # 生成特征（不包含质量）
+        generated_features = cathode.model.sample(current_batch_size, cond_inputs).detach().cpu().numpy()
+
+        # 合并生成的特征和采样质量
+        generated_sample = np.hstack([generated_features, sampled_masses.reshape(-1, 1)])
+        flow_generated_samples.append(generated_sample)
+
+    # 合并所有生成的样本
+    sr_background_generated = np.vstack(flow_generated_samples)
+
+    # 逆变换回物理空间
+    sr_background_physical = preprocessor.inverse_apply_preprocessing(
+        sr_background_generated,
+        feature_set,
+        preprocessing_info,
+        mass_scaler=mass_scaler,
+        mass_key="dimu_mass"
+    )
+
+    # 清理数据
+    sr_background_physical = preprocessor.clean_data(sr_background_physical)
+
+    logger.info(f"Generated {len(sr_background_physical)} background samples in SR region")
+
+    # 训练BDT
+    bdt_trainer = BDTTrainer(bdt_config)
+    bdt_scores_all, trained_bdt_models = bdt_trainer.train_bdt_on_sr(
+        sr_data=SR_data,
+        sr_generated_background=sr_background_physical,
+        random_state=args.seed
+    )
+
+    # 分离SR数据和背景的BDT分数
+    n_sr_real = len(SR_data)
+    bdt_scores_sr_real = bdt_scores_all[:n_sr_real]      # SR中真实数据的BDT分数
+    bdt_scores_sr_background = bdt_scores_all[n_sr_real:] # SR中生成背景的BDT分数
+
+    logger.info(f"BDT training completed. SR real data scores: mean={bdt_scores_sr_real.mean():.4f}")
+    logger.info(f"BDT training completed. SR background scores: mean={bdt_scores_sr_background.mean():.4f}")
+
     # 获取窗口定义
     window = config.get_window()
     SR_left = window["SR_left"]
@@ -766,18 +837,31 @@ def main():
         )
         
         mu = S_full / (S_full + B_full) if (S_full + B_full) > 0 else 0.0
-        
-        # 计算 likelihood ratios 和 weights（与原代码对齐）
-        # 原代码：likelihood_ratios = (all_scores) / (1 - all_scores)
-        # 注意：原代码没有添加 1e-10，但如果 all_scores 接近 1 可能会有数值问题
-        # 我们保留 1e-10 以提高数值稳定性，但应该不影响结果
-        likelihood_ratios = all_scores_full / (1 - all_scores_full + 1e-10)
-        # 原代码：weights = (likelihood_ratios - (1-mu)) / mu
-        # 我们添加 mu > 0 检查以提高稳健性
-        if mu > 0:
-            weights_full = (likelihood_ratios - (1 - mu)) / mu
-        else:
-            weights_full = np.ones_like(all_scores_full)
+
+        # ===== 使用BDT分数计算likelihood ratios（论文Step 4）=====
+        # 使用BDT概率分数z(x)而不是CATHODE anomaly scores计算likelihood ratio
+        logger.info("Using BDT scores for likelihood ratio calculation...")
+
+        # 对所有数据计算BDT分数（SR真实数据 + SR生成背景 + SB数据）
+        # 需要为SB数据也计算BDT分数
+        sb_data_combined = np.vstack([banded_data["SBL"], banded_data["SBH"]])
+        sb_bdt_scores = bdt_trainer.predict_proba_ensemble(sb_data_combined[:, :-1], trained_bdt_models)
+
+        # 合并所有数据的BDT分数
+        all_bdt_scores = np.concatenate([
+            bdt_scores_sr_real,      # SR真实数据
+            bdt_scores_sr_background, # SR生成背景
+            sb_bdt_scores             # SB数据
+        ])
+
+        # 使用BDT分数计算likelihood ratios（论文公式）
+        likelihood_ratios = bdt_trainer.compute_likelihood_ratios(all_bdt_scores, mu)
+
+        # 计算权重（soft weighting）
+        weights_full = bdt_trainer.compute_weights_from_likelihood_ratios(likelihood_ratios, mu)
+
+        logger.info(f"BDT-based likelihood ratios computed: mean={likelihood_ratios.mean():.4f}, std={likelihood_ratios.std():.4f}")
+        logger.info(f"Weights computed: mean={weights_full.mean():.4f}, std={weights_full.std():.4f}")
         # 原代码：weights = np.clip(weights, 0, 1e9)
         weights_full = np.clip(weights_full, 0, 1e9)
         

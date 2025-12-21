@@ -150,6 +150,16 @@ evaluation:
   bootstrap_stop: 100
   background_fit_degree: 5  # 背景拟合的多项式阶数
 
+# BDT配置（用于likelihood ratio学习）
+bdt:
+  n_estimators: 100      # 每棵树的估计器数量
+  max_depth: 3           # 树的最大深度
+  learning_rate: 0.1     # 学习率
+  subsample: 0.8         # 子样本比例
+  early_stopping_rounds: 10  # 早停轮数
+  n_ensemble: 10         # ensemble模型数量
+  num_folds: 5           # 交叉验证折数
+
 # 输出配置
 output:
   save_processed_data: true

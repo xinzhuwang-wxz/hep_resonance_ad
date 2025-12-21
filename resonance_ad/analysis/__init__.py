@@ -8,6 +8,7 @@ from .bump_hunt import (
     parametric_fit,
 )
 from .significance import compute_significance, calculate_test_statistic
+from .bdt import BDTTrainer, run_bdt_bump_hunt
 
 __all__ = [
     "BumpHunter",
@@ -17,5 +18,7 @@ __all__ = [
     "bkg_fit_quintic",
     "bkg_fit_septic",
     "parametric_fit",
+    "BDTTrainer",
+    "run_bdt_bump_hunt",
 ]
 
