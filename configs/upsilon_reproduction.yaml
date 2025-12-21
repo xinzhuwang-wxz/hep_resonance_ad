@@ -6,7 +6,7 @@ file_paths:
   data_storage_dir: "./data"  # 数据存储目录
 
 analysis_keywords:
-  name: "upsilon_iso_12_03"
+  name: "upsilon_iso_12_21"
   particle: upsilon
   dataset_id: lowmass
   
