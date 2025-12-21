@@ -183,11 +183,13 @@ def main():
     SR_scores = all_scores["SR"]
     SR_masses = all_masses_physical["SR"]  # 使用物理值用于显著性计算
 
-    # ===== Step 3: 训练BDT分类器（论文中的likelihood ratio学习）=====
-    logger.info("Step 3: Training BDT classifier for likelihood ratio learning...")
+    # ===== Step 3: 训练XGBoost分类器（论文中的likelihood ratio学习）=====
+    logger.info("Step 3: Training XGBoost classifier for likelihood ratio learning...")
 
-    # 获取BDT配置
+    # 获取XGBoost/BDT配置
     bdt_config = config.raw_config.get("bdt", {})
+    classifier_type = bdt_config.get("classifier_type", "xgboost")
+    logger.info(f"Using {classifier_type.upper()} classifier (default: XGBoost, recommended for stability)")
 
     # 准备SR数据用于BDT训练
     # 需要生成SR中的背景样本（使用训练好的flow模型）
@@ -238,21 +240,42 @@ def main():
 
     logger.info(f"Generated {len(sr_background_physical)} background samples in SR region")
 
-    # 训练BDT
+    # 训练XGBoost分类器（使用5-fold交叉验证）
     bdt_trainer = BDTTrainer(bdt_config)
-    bdt_scores_all, trained_bdt_models = bdt_trainer.train_bdt_on_sr(
+    
+    # 准备SB数据（用于测试集）
+    sb_data_combined = np.vstack([banded_data["SBL"], banded_data["SBH"]])
+    
+    # 训练BDT（返回SR和SB数据的分数，以及按fold组织的模型）
+    classifier_scores_sr_real, classifier_scores_sb_all, trained_models_by_fold = bdt_trainer.train_bdt_on_sr(
         sr_data=SR_data,
         sr_generated_background=sr_background_physical,
+        sb_data=sb_data_combined,  # SB数据用于测试集
         random_state=args.seed
     )
 
-    # 分离SR数据和背景的BDT分数
-    n_sr_real = len(SR_data)
-    bdt_scores_sr_real = bdt_scores_all[:n_sr_real]      # SR中真实数据的BDT分数
-    bdt_scores_sr_background = bdt_scores_all[n_sr_real:] # SR中生成背景的BDT分数
+    logger.info(f"XGBoost training completed. SR real data scores: mean={classifier_scores_sr_real.mean():.4f}, std={classifier_scores_sr_real.std():.4f}")
+    logger.info(f"XGBoost training completed. SB data scores: mean={classifier_scores_sb_all.mean():.4f}, std={classifier_scores_sb_all.std():.4f}")
 
-    logger.info(f"BDT training completed. SR real data scores: mean={bdt_scores_sr_real.mean():.4f}")
-    logger.info(f"BDT training completed. SR background scores: mean={bdt_scores_sr_background.mean():.4f}")
+    # ===== 计算所有区域的XGBoost分类器分数（用于FPR和cut）=====
+    logger.info("Computing XGBoost classifier scores for all regions...")
+    
+    # 创建XGBoost分类器分数字典
+    all_bdt_scores = {}
+    
+    # SR真实数据的XGBoost分数（已从5-fold交叉验证中获得）
+    all_bdt_scores["SR"] = classifier_scores_sr_real
+    
+    # SB数据的XGBoost分数（已从5-fold交叉验证中获得）
+    # 分离SBL和SBH的XGBoost分数
+    n_sbl = len(banded_data["SBL"])
+    all_bdt_scores["SBL"] = classifier_scores_sb_all[:n_sbl]
+    all_bdt_scores["SBH"] = classifier_scores_sb_all[n_sbl:]
+    
+    logger.info("XGBoost classifier scores computed for all regions")
+    logger.info(f"  SBL XGBoost scores: mean={all_bdt_scores['SBL'].mean():.4f}, std={all_bdt_scores['SBL'].std():.4f}")
+    logger.info(f"  SR XGBoost scores: mean={all_bdt_scores['SR'].mean():.4f}, std={all_bdt_scores['SR'].std():.4f}")
+    logger.info(f"  SBH XGBoost scores: mean={all_bdt_scores['SBH'].mean():.4f}, std={all_bdt_scores['SBH'].std():.4f}")
 
     # 获取窗口定义
     window = config.get_window()
@@ -275,8 +298,8 @@ def main():
     # 计算多个 FPR 阈值的结果
     logger.info(f"Computing results for {len(fpr_thresholds)} FPR thresholds...")
     
-    # 准备 SB 数据用于计算 FPR
-    SB_scores = np.concatenate([all_scores["SBL"], all_scores["SBH"]])
+    # 准备 SB 数据用于计算 FPR（使用XGBoost分类器分数）
+    SB_classifier_scores = np.concatenate([all_bdt_scores["SBL"], all_bdt_scores["SBH"]])
     SB_masses = np.concatenate([all_masses_physical["SBL"], all_masses_physical["SBH"]])
     
     # 打印初始数据量（用于调试）
@@ -286,16 +309,16 @@ def main():
     logger.info(f"  SR events: {len(all_masses_physical['SR']):,}")
     logger.info(f"  SBH events: {len(all_masses_physical['SBH']):,}")
     logger.info(f"  Total events: {len(all_masses_physical['SBL']) + len(all_masses_physical['SR']) + len(all_masses_physical['SBH']):,}")
-    logger.info(f"  SB events (SBL+SBH): {len(SB_scores):,}")
+    logger.info(f"  SB events (SBL+SBH): {len(SB_classifier_scores):,}")
     logger.info("=" * 60)
     
-    # 计算 score cutoff points（用于找到对应的 FPR）
-    score_cut_points = np.linspace(SB_scores.min(), SB_scores.max(), 10000)
+    # 计算 score cutoff points（用于找到对应的 FPR）- 使用XGBoost分类器分数
+    score_cut_points = np.linspace(SB_classifier_scores.min(), SB_classifier_scores.max(), 10000)
     
-    # 计算每个 cutoff 对应的 FPR
+    # 计算每个 cutoff 对应的 FPR（使用XGBoost分类器分数）
     FPR_values = []
     for cut in score_cut_points:
-        fpr = np.sum(SB_scores >= cut) / len(SB_scores)
+        fpr = np.sum(SB_classifier_scores >= cut) / len(SB_classifier_scores)
         FPR_values.append(fpr)
     FPR_values = np.array(FPR_values)
     
@@ -378,10 +401,10 @@ def main():
             best_cut_idx = np.argmin(np.abs(FPR_values - threshold))
             score_cutoff = score_cut_points[best_cut_idx]
             
-            # 根据 score cutoff 过滤数据（使用物理质量值）
-            filtered_masses_SBL = all_masses_physical["SBL"][all_scores["SBL"] >= score_cutoff]
-            filtered_masses_SR = all_masses_physical["SR"][all_scores["SR"] >= score_cutoff]
-            filtered_masses_SBH = all_masses_physical["SBH"][all_scores["SBH"] >= score_cutoff]
+            # 根据 score cutoff 过滤数据（使用物理质量值和XGBoost分类器分数）
+            filtered_masses_SBL = all_masses_physical["SBL"][all_bdt_scores["SBL"] >= score_cutoff]
+            filtered_masses_SR = all_masses_physical["SR"][all_bdt_scores["SR"] >= score_cutoff]
+            filtered_masses_SBH = all_masses_physical["SBH"][all_bdt_scores["SBH"] >= score_cutoff]
             
             # 合并所有过滤后的质量
             filtered_masses = np.concatenate([filtered_masses_SBL, filtered_masses_SR, filtered_masses_SBH])
@@ -478,7 +501,7 @@ def main():
     logger.debug(f"Background expectation sum: {background_expectation.sum():.2f}")
     
     results = bump_hunter.hunt_bump(
-        SR_masses_for_bump, SR_scores, bins_SR, background_expectation
+        SR_masses_for_bump, all_bdt_scores["SR"], bins_SR, background_expectation
     )
     
     logger.info(f"Max significance: {results['max_significance']:.2f} sigma")
@@ -624,20 +647,15 @@ def main():
             FPR_values_feat = np.array(FPR_values_feat)
             
             # 对每个细粒度 FPR 阈值计算显著性
-            # 为了加快速度，跳过 FPR=1.0 附近的阈值（通常不用于分析）
-            fpr_thresholds_to_compute = fpr_thresholds_finegrained[fpr_thresholds_finegrained < 0.99]
+            # 计算所有FPR阈值（包括FPR=1.0，与原始代码一致）
             feat_sigs = np.zeros((len(fpr_thresholds_finegrained), 1))
-            logger.info(f"  Computing significances for {len(fpr_thresholds_to_compute)} FPR thresholds (skipping FPR>=0.99)...")
+            logger.info(f"  Computing significances for {len(fpr_thresholds_finegrained)} FPR thresholds (including FPR=1.0)...")
             
-            # 创建映射：fpr_thresholds_finegrained 索引到 fpr_thresholds_to_compute 索引
-            compute_idx = 0
+            # 遍历所有FPR阈值（包括FPR=1.0）
             for i, fpr_fine in enumerate(fpr_thresholds_finegrained):
-                if fpr_fine >= 0.99:
-                    feat_sigs[i, 0] = 0.0  # 跳过 FPR>=0.99
-                    continue
                 
-                if compute_idx % 3 == 0:  # 每3个打印一次进度
-                    logger.info(f"    Processing FPR threshold {compute_idx+1}/{len(fpr_thresholds_to_compute)}: {fpr_fine:.4f}")
+                if i % 3 == 0:  # 每3个打印一次进度
+                    logger.info(f"    Processing FPR threshold {i+1}/{len(fpr_thresholds_finegrained)}: {fpr_fine:.4f}")
                 
                 # 找到对应的特征切割点
                 best_cut_idx = np.argmin(np.abs(FPR_values_feat - fpr_fine))
@@ -653,7 +671,6 @@ def main():
                 # 如果过滤后的数据太少，跳过
                 if len(filtered_masses_feat) < 100:
                     feat_sigs[i, 0] = 0.0
-                    compute_idx += 1
                     continue
                 
                 # 拟合背景
@@ -686,14 +703,12 @@ def main():
                     feat_sigs[i, 0] = np.sqrt(q0_feat) if q0_feat > 0 else 0.0
                     
                     # 添加调试输出（每3个FPR阈值打印一次）
-                    if compute_idx % 3 == 0:
+                    if i % 3 == 0:
                         s_over_b_feat = S_feat/B_feat if B_feat > 0 else 0
                         logger.info(f"      [DEBUG] {feat_name} FPR={fpr_fine:.4f}: Total={len(filtered_masses_feat):,}, SR={len(mass_SR_cut):,}, S={S_feat:.2f}, B={B_feat:.2f}, S/B={s_over_b_feat:.4f}, sqrt(q0)={feat_sigs[i, 0]:.2f}σ")
                 except Exception as e:
                     logger.warning(f"      Error computing significance for {feat_name} at FPR {fpr_fine:.4f}: {e}")
                     feat_sigs[i, 0] = 0.0
-                
-                compute_idx += 1
             
             feature_sigs[feat_name] = feat_sigs
             logger.info(f"  Completed feature {feat_name}")
@@ -803,13 +818,8 @@ def main():
             SR_masses_physical_full,
             SBH_masses_physical_full
         ])
-        all_scores_full = np.concatenate([
-            all_scores["SBL"],
-            SR_scores,
-            all_scores["SBH"]
-        ])
         
-        # 计算权重（likelihood reweighting）
+        # 计算权重（likelihood reweighting）- 使用BDT分数
         # 首先拟合背景以估计 mu
         popt_full, pcov_full, chi2_full = fit_background(
             all_masses_full,
@@ -838,29 +848,27 @@ def main():
         
         mu = S_full / (S_full + B_full) if (S_full + B_full) > 0 else 0.0
 
-        # ===== 使用BDT分数计算likelihood ratios（论文Step 4）=====
-        # 使用BDT概率分数z(x)而不是CATHODE anomaly scores计算likelihood ratio
-        logger.info("Using BDT scores for likelihood ratio calculation...")
+        # ===== 使用XGBoost分类器分数计算likelihood ratios（论文Step 4）=====
+        # 使用XGBoost概率分数z(x)而不是CATHODE anomaly scores计算likelihood ratio
+        logger.info("Using XGBoost classifier scores for likelihood ratio calculation...")
 
-        # 对所有数据计算BDT分数（SR真实数据 + SR生成背景 + SB数据）
-        # 需要为SB数据也计算BDT分数
-        sb_data_combined = np.vstack([banded_data["SBL"], banded_data["SBH"]])
-        sb_bdt_scores = bdt_trainer.predict_proba_ensemble(sb_data_combined[:, :-1], trained_bdt_models)
-
-        # 合并所有数据的BDT分数
-        all_bdt_scores = np.concatenate([
-            bdt_scores_sr_real,      # SR真实数据
-            bdt_scores_sr_background, # SR生成背景
-            sb_bdt_scores             # SB数据
+        # 合并所有数据的XGBoost分类器分数（使用已计算的分数）
+        # 注意：all_bdt_scores["SR"]只包含SR真实数据，不包括生成的背景
+        # 对于likelihood reweighting，我们需要SR真实数据 + SR生成背景 + SB数据
+        all_classifier_scores_for_reweighting = np.concatenate([
+            all_bdt_scores["SR"],              # SR真实数据的XGBoost分数
+            classifier_scores_sr_background,   # SR生成背景的XGBoost分数
+            all_bdt_scores["SBL"],             # SBL数据的XGBoost分数
+            all_bdt_scores["SBH"]              # SBH数据的XGBoost分数
         ])
 
-        # 使用BDT分数计算likelihood ratios（论文公式）
-        likelihood_ratios = bdt_trainer.compute_likelihood_ratios(all_bdt_scores, mu)
+        # 使用XGBoost分类器分数计算likelihood ratios（论文公式）
+        likelihood_ratios = bdt_trainer.compute_likelihood_ratios(all_classifier_scores_for_reweighting, mu)
 
         # 计算权重（soft weighting）
         weights_full = bdt_trainer.compute_weights_from_likelihood_ratios(likelihood_ratios, mu)
 
-        logger.info(f"BDT-based likelihood ratios computed: mean={likelihood_ratios.mean():.4f}, std={likelihood_ratios.std():.4f}")
+        logger.info(f"XGBoost-based likelihood ratios computed: mean={likelihood_ratios.mean():.4f}, std={likelihood_ratios.std():.4f}")
         logger.info(f"Weights computed: mean={weights_full.mean():.4f}, std={weights_full.std():.4f}")
         # 原代码：weights = np.clip(weights, 0, 1e9)
         weights_full = np.clip(weights_full, 0, 1e9)
@@ -917,20 +925,18 @@ def main():
                     SR_left, SR_right, SB_left, SB_right, num_bins_SR=bin_num, binning="linear"
                 )
                 
-                # 计算所有 finegrained FPR 阈值下的显著性
+                # 计算所有 finegrained FPR 阈值下的显著性（包括FPR=1.0，与原始代码一致）
                 sigs_list = []
                 for t, fpr_thresh in enumerate(fpr_thresholds_finegrained):
-                    if fpr_thresh >= 0.99:
-                        continue  # 跳过 FPR >= 0.99
                     
                     # 找到对应的 score cutoff
                     best_cut_idx = np.argmin(np.abs(FPR_values - fpr_thresh))
                     score_cutoff = score_cut_points[best_cut_idx]
                     
-                    # 过滤数据
-                    filtered_masses_SBL_var = all_masses_physical["SBL"][all_scores["SBL"] >= score_cutoff]
-                    filtered_masses_SR_var = all_masses_physical["SR"][all_scores["SR"] >= score_cutoff]
-                    filtered_masses_SBH_var = all_masses_physical["SBH"][all_scores["SBH"] >= score_cutoff]
+                    # 过滤数据（使用XGBoost分类器分数）
+                    filtered_masses_SBL_var = all_masses_physical["SBL"][all_bdt_scores["SBL"] >= score_cutoff]
+                    filtered_masses_SR_var = all_masses_physical["SR"][all_bdt_scores["SR"] >= score_cutoff]
+                    filtered_masses_SBH_var = all_masses_physical["SBH"][all_bdt_scores["SBH"] >= score_cutoff]
                     filtered_masses_var = np.concatenate([filtered_masses_SBL_var, filtered_masses_SR_var, filtered_masses_SBH_var])
                     
                     # 拟合背景
@@ -985,12 +991,12 @@ def main():
         best_cut_idx = np.argmin(np.abs(FPR_values - threshold))
         score_cutoff = score_cut_points[best_cut_idx]
         
-        # 过滤 SR 数据
-        SR_filtered = SR_data[SR_scores >= score_cutoff]
+        # 过滤 SR 数据（使用XGBoost分类器分数）
+        SR_filtered = SR_data[all_bdt_scores["SR"] >= score_cutoff]
         
-        # 提取特征值（排除 dimu_mass）
+        # 提取特征值（排除 dimu_mass，提取所有特征以保持兼容性）
         feat_dict = {}
-        for feat_name in feature_set_for_plot[:3]:  # 只提取前3个特征
+        for feat_name in feature_set_for_plot:  # 提取所有特征（不仅仅是前3个）
             if feat_name in feature_set:
                 feat_idx = feature_set.index(feat_name)
                 feat_dict[feat_name] = SR_filtered[:, feat_idx]
@@ -999,7 +1005,7 @@ def main():
     
     # 提取 isolation 数据（反隔离切割前的数据）
     isolation_data = {}
-    for feat_name in feature_set_for_plot[:3]:
+    for feat_name in feature_set_for_plot:  # 提取所有特征（不仅仅是前3个）
         if feat_name in feature_set:
             feat_idx = feature_set.index(feat_name)
             isolation_data[feat_name] = SR_data[:, feat_idx]
@@ -1014,7 +1020,8 @@ def main():
     with open(results_path, "wb") as f:
         pickle.dump({
             "results": results,
-            "SR_scores": SR_scores,
+            "SR_bdt_scores": all_bdt_scores["SR"],  # XGBoost分类器分数（用于cut和FPR）
+            "SR_cathode_scores": SR_scores,  # CATHODE anomaly scores（诊断用）
             "background_params": popt_single,
             "background_cov": pcov_single,
             "chi2": chi2_single,
@@ -1031,6 +1038,8 @@ def main():
             "isolation_data": isolation_data,
             # 变体数据（用于 plot_variations）
             "variations_data": variations_data if args.all_variations else None,
+            # XGBoost分类器分数（所有区域，用于后续分析）
+            "all_bdt_scores": all_bdt_scores,  # 保留键名以兼容现有代码
         }, f)
     
     logger.info("Evaluation completed successfully")

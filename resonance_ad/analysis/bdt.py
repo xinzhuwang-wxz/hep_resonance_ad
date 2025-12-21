@@ -2,6 +2,8 @@
 XGBoost/BDT 训练模块
 
 实现论文中的Step 3：训练分类器区分SR中的真实数据和生成的背景样本
+
+使用XGBoost作为默认分类器（优先，更稳定），支持通过配置选择其他分类器。
 """
 
 import numpy as np
@@ -19,7 +21,8 @@ class BDTTrainer:
     """
     XGBoost/BDT 训练器
 
-    在SR中训练分类器区分真实数据和flow生成的背景样本
+    在SR中训练分类器区分真实数据和flow生成的背景样本。
+    默认使用XGBoost（优先，更稳定）。
     """
 
     def __init__(self, config: Dict[str, Any]):
@@ -27,12 +30,31 @@ class BDTTrainer:
         初始化BDT训练器
 
         Args:
-            config: BDT配置字典
+            config: BDT配置字典，支持以下选项：
+                - classifier_type: "xgboost" (默认，推荐) 或 "bdt"
+                - n_estimators: 树的数量
+                - max_depth: 树的最大深度
+                - learning_rate: 学习率
+                - subsample: 子样本比例
+                - early_stopping_rounds: 早停轮数
+                - n_ensemble: ensemble模型数量
+                - num_folds: 交叉验证折数
         """
         self.config = config
         self.logger = get_logger(__name__)
 
-        # 默认BDT超参数（基于原始论文）
+        # 分类器类型（默认XGBoost，优先使用）
+        self.classifier_type = config.get("classifier_type", "xgboost").lower()
+        if self.classifier_type not in ["xgboost", "bdt"]:
+            self.logger.warning(f"Unknown classifier_type '{self.classifier_type}', defaulting to 'xgboost'")
+            self.classifier_type = "xgboost"
+
+        if self.classifier_type == "xgboost":
+            self.logger.info("Using XGBoost classifier (recommended, more stable)")
+        else:
+            self.logger.info(f"Using {self.classifier_type} classifier")
+
+        # 默认XGBoost超参数（基于原始论文）
         self.default_params = {
             "n_estimators": 100,
             "max_depth": 3,
@@ -50,120 +72,201 @@ class BDTTrainer:
         self,
         sr_data: np.ndarray,
         sr_generated_background: np.ndarray,
-        val_size: float = 0.2,
+        sb_data: np.ndarray,
         random_state: int = 42
-    ) -> Tuple[np.ndarray, List[Any]]:
+    ) -> Tuple[np.ndarray, np.ndarray, Dict[int, List[Any]]]:
         """
-        在SR中训练BDT分类器
-
+        在SR中训练BDT分类器（使用5-fold交叉验证）
+        
+        完全匹配原始代码的 run_BDT_bump_hunt 函数逻辑
+        
         Args:
             sr_data: SR中的真实数据 (n_events, n_features)
             sr_generated_background: SR中flow生成的背景样本 (n_events, n_features)
-            val_size: 验证集比例
+            sb_data: SB中的真实数据 (n_events, n_features) - 用于测试集
             random_state: 随机种子
-
+            
         Returns:
-            bdt_scores: BDT概率分数数组 (n_events,)
-            trained_models: 训练好的模型列表
+            sr_scores: SR数据的BDT概率分数数组，按原始数据顺序排列
+            sb_scores: SB数据的BDT概率分数数组，按原始数据顺序排列
+            trained_models_by_fold: 按fold组织的训练好的模型列表 {fold_id: [models]}
         """
-        self.logger.info("开始BDT训练...")
-
-        # 准备训练数据
-        # 注意：排除质量特征（最后一列），因为BDT不使用质量信息
-        X_data = sr_data[:, :-1]      # 真实SR数据（不含质量）
-        X_background = sr_generated_background[:, :-1]  # 生成的背景（不含质量）
-
-        # 标签：1 = 真实数据，0 = 生成背景
-        y_data = np.ones(X_data.shape[0])
-        y_background = np.zeros(X_background.shape[0])
-
-        # 合并训练数据
-        X_train = np.vstack([X_data, X_background])
-        y_train = np.hstack([y_data, y_background])
-
-        # 计算类别权重（平衡正负样本）
-        class_weight = {0: 1.0, 1: len(X_background) / len(X_data)}
-        sample_weights = np.array([class_weight[int(y)] for y in y_train])
-
-        # 打乱数据
-        X_train, y_train, sample_weights = shuffle(
-            X_train, y_train, sample_weights, random_state=random_state
-        )
-
-        # 训练BDT ensemble
+        self.logger.info(f"开始{self.classifier_type.upper()}训练（5-fold交叉验证）...")
+        
+        num_folds = self.hyperparams["num_folds"]
         n_ensemble = self.hyperparams["n_ensemble"]
-        trained_models = []
-
-        self.logger.info(f"训练 {n_ensemble} 个BDT模型...")
-
-        for i in range(n_ensemble):
-            # 为每个模型设置不同的随机种子
-            model_seed = random_state + i * 100
-
-            # XGBoost参数
-            xgb_params = {
-                'n_estimators': self.hyperparams["n_estimators"],
-                'max_depth': self.hyperparams["max_depth"],
-                'learning_rate': self.hyperparams["learning_rate"],
-                'subsample': self.hyperparams["subsample"],
-                'early_stopping_rounds': self.hyperparams["early_stopping_rounds"],
-                'objective': 'binary:logistic',
-                'random_state': model_seed,
-                'eval_metric': 'logloss',
-                'verbosity': 0,  # 静默模式
-            }
-
-            # 创建和训练模型
-            model = xgb.XGBClassifier(**xgb_params)
-
-            # 训练（使用验证集进行early stopping）
-            eval_set = [(X_train, y_train)]
-            if val_size > 0:
-                # 简单分割验证集
-                n_val = int(len(X_train) * val_size)
-                X_train_split = X_train[:-n_val]
-                y_train_split = y_train[:-n_val]
-                X_val_split = X_train[-n_val:]
-                y_val_split = y_train[-n_val:]
-                w_train_split = sample_weights[:-n_val]
-                w_val_split = sample_weights[-n_val:]
-
-                eval_set = [(X_train_split, y_train_split), (X_val_split, y_val_split)]
-
+        
+        # 1. 打乱数据（与原始代码一致）
+        flow_samples_SR = shuffle(sr_generated_background, random_state=random_state)
+        data_samples_SR = shuffle(sr_data, random_state=random_state + 1)
+        data_samples_SB = shuffle(sb_data, random_state=random_state + 2)
+        
+        # 记录原始索引（用于后续重新排序）
+        flow_indices = np.arange(len(sr_generated_background))
+        data_indices = np.arange(len(sr_data))
+        sb_indices = np.arange(len(sb_data))
+        
+        flow_indices_shuffled = shuffle(flow_indices, random_state=random_state)
+        data_indices_shuffled = shuffle(data_indices, random_state=random_state + 1)
+        sb_indices_shuffled = shuffle(sb_indices, random_state=random_state + 2)
+        
+        # 2. 分割成fold
+        flow_SR_splits = np.array_split(flow_samples_SR, num_folds)
+        data_SR_splits = np.array_split(data_samples_SR, num_folds)
+        data_SB_splits = np.array_split(data_samples_SB, num_folds)
+        
+        # 记录每个fold对应的原始索引
+        flow_indices_splits = np.array_split(flow_indices_shuffled, num_folds)
+        data_indices_splits = np.array_split(data_indices_shuffled, num_folds)
+        sb_indices_splits = np.array_split(sb_indices_shuffled, num_folds)
+        
+        # 3. 存储结果
+        scores_splits = {}  # {fold_id: scores_array}
+        test_indices_splits = {}  # {fold_id: original_indices}
+        trained_models_by_fold = {}  # {fold_id: [models]}
+        
+        # 4. 对每个fold进行训练
+        for i_fold in range(num_folds):
+            self.logger.info(f"训练 Fold {i_fold + 1}/{num_folds}...")
+            
+            # 4.1 组装训练/验证/测试数据
+            training_data, training_labels = [], []
+            validation_data, validation_labels = [], []
+            testing_data = []
+            test_indices = []
+            
+            for ii in range(num_folds):
+                if ii == i_fold:
+                    # 测试集：SR数据 + SB数据
+                    testing_data.append(data_SR_splits[ii])
+                    testing_data.append(data_SB_splits[ii])
+                    test_indices.append(('SR', data_indices_splits[ii]))
+                    test_indices.append(('SB', sb_indices_splits[ii]))
+                elif ((ii+1) % num_folds) == i_fold:
+                    # 验证集：flow SR + real SR
+                    validation_data.append(flow_SR_splits[ii])
+                    validation_labels.append(np.zeros((flow_SR_splits[ii].shape[0], 1)))
+                    validation_data.append(data_SR_splits[ii])
+                    validation_labels.append(np.ones((data_SR_splits[ii].shape[0], 1)))
+                else:
+                    # 训练集：flow SR + real SR
+                    training_data.append(flow_SR_splits[ii])
+                    training_labels.append(np.zeros((flow_SR_splits[ii].shape[0], 1)))
+                    training_data.append(data_SR_splits[ii])
+                    training_labels.append(np.ones((data_SR_splits[ii].shape[0], 1)))
+            
+            # 4.2 合并数据（排除质量特征，最后一列）
+            X_train_fold = np.concatenate(training_data)[:, :-1]
+            Y_train_fold = np.concatenate(training_labels).flatten()
+            X_val_fold = np.concatenate(validation_data)[:, :-1]
+            Y_val_fold = np.concatenate(validation_labels).flatten()
+            X_test_fold = np.concatenate(testing_data)[:, :-1]
+            
+            # 4.3 计算类别权重（与原始代码一致）
+            class_weight = {0: 1.0, 1: np.sum(Y_train_fold == 0) / np.sum(Y_train_fold == 1)}
+            w_train_fold = np.array([class_weight[int(y)] for y in Y_train_fold])
+            w_val_fold = np.array([class_weight[int(y)] for y in Y_val_fold])
+            
+            # 4.4 打乱数据
+            X_train_fold, Y_train_fold, w_train_fold = shuffle(
+                X_train_fold, Y_train_fold, w_train_fold, random_state=random_state + i_fold
+            )
+            X_val_fold, Y_val_fold, w_val_fold = shuffle(
+                X_val_fold, Y_val_fold, w_val_fold, random_state=random_state + i_fold + 100
+            )
+            
+            # 4.5 训练ensemble模型
+            scores_fold = np.empty((X_test_fold.shape[0], n_ensemble))
+            trained_models_fold = []
+            
+            for i_tree in range(n_ensemble):
+                if i_tree % 10 == 0:
+                    self.logger.info(f"  Fold {i_fold + 1}, 模型 {i_tree + 1}/{n_ensemble}")
+                
+                # 随机种子：与原始代码完全一致
+                random_seed = i_fold * n_ensemble + i_tree + 1
+                
+                xgb_params = {
+                    'n_estimators': self.hyperparams["n_estimators"],
+                    'max_depth': self.hyperparams["max_depth"],
+                    'learning_rate': self.hyperparams["learning_rate"],
+                    'subsample': self.hyperparams["subsample"],
+                    'early_stopping_rounds': self.hyperparams["early_stopping_rounds"],
+                    'objective': 'binary:logistic',
+                    'random_state': random_seed,
+                    'eval_metric': 'logloss',
+                    'verbosity': 0,
+                }
+                
+                model = xgb.XGBClassifier(**xgb_params)
+                eval_set = [(X_train_fold, Y_train_fold), (X_val_fold, Y_val_fold)]
+                
                 model.fit(
-                    X_train_split, y_train_split,
-                    sample_weight=w_train_split,
+                    X_train_fold, Y_train_fold,
+                    sample_weight=w_train_fold,
                     eval_set=eval_set,
-                    sample_weight_eval_set=[w_train_split, w_val_split],
+                    sample_weight_eval_set=[w_train_fold, w_val_fold],
                     verbose=False
                 )
-            else:
-                model.fit(X_train, y_train, sample_weight=sample_weights, verbose=False)
-
-            trained_models.append(model)
-
-            if (i + 1) % 5 == 0:
-                self.logger.info(f"已训练 {i + 1}/{n_ensemble} 个模型")
-
-        self.logger.info(f"BDT训练完成，共训练 {len(trained_models)} 个模型")
-
-        # 使用训练好的模型对所有SR数据进行打分
-        self.logger.info("计算BDT分数...")
-
-        # 对SR中的所有事件进行打分（包括真实数据和生成的背景）
-        X_sr_all = np.vstack([sr_data[:, :-1], sr_generated_background[:, :-1]])
-
-        bdt_scores = self.predict_proba_ensemble(X_sr_all, trained_models)
-
-        self.logger.info(f"BDT打分完成，共处理 {len(bdt_scores)} 个事件")
-
-        return bdt_scores, trained_models
+                
+                trained_models_fold.append(model)
+                
+                # 使用best_iteration进行预测（与原始代码一致）
+                best_iteration = model.best_iteration if model.best_iteration is not None else self.hyperparams["n_estimators"]
+                scores_fold[:, i_tree] = model.predict_proba(
+                    X_test_fold, 
+                    iteration_range=(0, best_iteration)
+                )[:, 1]
+            
+            # 4.6 平均ensemble分数（与原始代码一致，take_ensemble_avg=True）
+            scores_splits[i_fold] = np.mean(scores_fold, axis=1)
+            test_indices_splits[i_fold] = test_indices
+            trained_models_by_fold[i_fold] = trained_models_fold
+            
+            self.logger.info(f"Fold {i_fold + 1} 完成，测试集大小: {len(scores_splits[i_fold])}")
+        
+        # 5. 合并所有fold的分数，按原始数据顺序排列
+        self.logger.info("合并所有fold的分数...")
+        
+        # 创建完整的分数数组（SR数据 + SB数据）
+        n_sr = len(sr_data)
+        n_sb = len(sb_data)
+        total_scores = np.zeros(n_sr + n_sb)
+        
+        # 合并SR和SB的分数
+        for i_fold in range(num_folds):
+            scores_fold = scores_splits[i_fold]
+            indices_fold = test_indices_splits[i_fold]
+            
+            idx_in_fold = 0
+            for region_type, indices in indices_fold:
+                if region_type == 'SR':
+                    # SR数据的分数
+                    for orig_idx in indices:
+                        total_scores[orig_idx] = scores_fold[idx_in_fold]
+                        idx_in_fold += 1
+                elif region_type == 'SB':
+                    # SB数据的分数（放在SR之后）
+                    for orig_idx in indices:
+                        total_scores[n_sr + orig_idx] = scores_fold[idx_in_fold]
+                        idx_in_fold += 1
+        
+        # 分离SR和SB的分数
+        sr_scores = total_scores[:n_sr]
+        sb_scores = total_scores[n_sr:]
+        
+        self.logger.info(f"XGBoost训练完成，共 {num_folds} folds × {n_ensemble} 模型")
+        self.logger.info(f"SR数据分数: mean={sr_scores.mean():.4f}, std={sr_scores.std():.4f}")
+        self.logger.info(f"SB数据分数: mean={sb_scores.mean():.4f}, std={sb_scores.std():.4f}")
+        
+        return sr_scores, sb_scores, trained_models_by_fold
 
     def predict_proba_ensemble(
         self,
         X: np.ndarray,
         models: List[Any],
-        method: str = "mean"
+        method: str = "mean",
+        use_best_iteration: bool = True
     ) -> np.ndarray:
         """
         使用ensemble模型进行概率预测
@@ -172,6 +275,7 @@ class BDTTrainer:
             X: 输入特征 (n_samples, n_features)
             models: 训练好的模型列表
             method: 集成方法 ("mean", "median", 或 "best")
+            use_best_iteration: 是否使用best_iteration进行预测（与原始代码一致）
 
         Returns:
             预测概率数组 (n_samples,) - 返回正类概率
@@ -183,8 +287,16 @@ class BDTTrainer:
         all_predictions = []
 
         for model in models:
-            # predict_proba 返回 [负类概率, 正类概率]，我们需要正类概率
-            proba = model.predict_proba(X)[:, 1]
+            # 使用best_iteration进行预测（与原始代码一致）
+            if use_best_iteration and hasattr(model, 'best_iteration') and model.best_iteration is not None:
+                proba = model.predict_proba(
+                    X, 
+                    iteration_range=(0, model.best_iteration)
+                )[:, 1]
+            else:
+                # 如果没有best_iteration，使用所有iteration
+                proba = model.predict_proba(X)[:, 1]
+            
             all_predictions.append(proba)
 
         all_predictions = np.array(all_predictions)  # (n_models, n_samples)
@@ -204,7 +316,7 @@ class BDTTrainer:
 
     def compute_likelihood_ratios(
         self,
-        bdt_scores: np.ndarray,
+        classifier_scores: np.ndarray,
         mu: float,
         epsilon: float = 1e-10
     ) -> np.ndarray:
@@ -213,17 +325,17 @@ class BDTTrainer:
 
         ℓ(x) = [z(x) - (1-μ)(1-z(x))] / [μ(1-z(x))]
 
-        其中 z(x) 是BDT概率分数，μ 是信号比例
+        其中 z(x) 是XGBoost分类器概率分数，μ 是信号比例
 
         Args:
-            bdt_scores: BDT概率分数 z(x)
+            classifier_scores: XGBoost分类器概率分数 z(x)
             mu: 信号比例 μ = N_sig / (N_sig + N_bkg)
             epsilon: 数值稳定性参数
 
         Returns:
             likelihood_ratios: 似然比数组
         """
-        z = bdt_scores
+        z = classifier_scores
 
         # 避免除零错误
         denominator = mu * (1 - z + epsilon)
@@ -312,7 +424,7 @@ def run_bdt_bump_hunt(
     num_folds: int = 5,
     visualize: bool = True,
     save_path: Optional[str] = None
-) -> Tuple[np.ndarray, List[Any]]:
+) -> Tuple[np.ndarray, np.ndarray, Dict[int, List[Any]]]:
     """
     运行完整的BDT bump hunt流程（参考原始dimuonAD代码）
 
@@ -326,19 +438,25 @@ def run_bdt_bump_hunt(
         save_path: 保存路径
 
     Returns:
-        bdt_scores: BDT分数
-        trained_models: 训练好的模型列表
+        sr_scores: SR数据的BDT分数
+        sb_scores: SB数据的BDT分数
+        trained_models_by_fold: 按fold组织的训练好的模型列表
     """
     trainer = BDTTrainer(bdt_config)
 
-    # 训练BDT
-    bdt_scores, trained_models = trainer.train_bdt_on_sr(
+    # 训练BDT（使用5-fold交叉验证）
+    sr_scores, sb_scores, trained_models_by_fold = trainer.train_bdt_on_sr(
         sr_data=data_samples_sr,
         sr_generated_background=flow_samples_sr,
+        sb_data=data_samples_sb,
         random_state=42
     )
 
-    if visualize and trained_models:
-        trainer.plot_bdt_training_history(trained_models, save_path)
+    if visualize and trained_models_by_fold:
+        # 收集所有模型用于可视化
+        all_models = []
+        for fold_id in sorted(trained_models_by_fold.keys()):
+            all_models.extend(trained_models_by_fold[fold_id])
+        trainer.plot_bdt_training_history(all_models, save_path)
 
-    return bdt_scores, trained_models
+    return sr_scores, sb_scores, trained_models_by_fold

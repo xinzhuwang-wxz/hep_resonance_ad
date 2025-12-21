@@ -275,29 +275,89 @@ def plot_features(
     n_features = len(feature_set)
     nbins = 35
     
-    # bins 定义（与原始代码完全一致）
+    # bins 定义（与原始代码完全一致，扩展以支持所有可能用到的特征）
     bins = {
         "dimu_pt": np.linspace(0, 150, nbins),
-        "mu0_ip3d": np.logspace(-4, 0, nbins),
+        "dimu_eta": np.linspace(-5, 5, nbins),
+        "mu0_pt": np.linspace(0, 120, nbins),
+        "mu1_pt": np.linspace(0, 120, nbins),
+        "mu0_eta": np.linspace(-3, 3, nbins),
+        "mu1_eta": np.linspace(-3, 3, nbins),
+        "mu0_ip3d": np.logspace(-4, 0, nbins),  # 原始代码使用 -6, 0，我们使用 -4, 0（与08_render.ipynb一致）
         "mu1_ip3d": np.logspace(-4, 0, nbins),
+        "mu0_iso04": np.linspace(0, 1, nbins),
+        "mu1_iso04": np.linspace(0, 1, nbins),
+        "mumu_deltapT": np.linspace(0, 100, nbins),
+        "mumu_deltaR": np.linspace(0, 1, nbins),
     }
     labels = {
         "dimu_pt": "Dimuon $p_T$ [GeV]",
+        "dimu_eta": "Dimuon $\eta$",
+        "mu0_pt": "Muon 1 $p_T$ [GeV]",
+        "mu1_pt": "Muon 2 $p_T$ [GeV]",
+        "mu0_eta": "Muon 1 $\eta$",
+        "mu1_eta": "Muon 2 $\eta$",
         "mu0_ip3d": "Harder Mu IP3D [cm]",
         "mu1_ip3d": "Softer Mu IP3D [cm]",
+        "mu0_iso04": "Muon 1 iso04",
+        "mu1_iso04": "Muon 2 iso04",
+        "mumu_deltapT": "Muon $\Delta p_T$ [GeV]",
+        "mumu_deltaR": "Muon $\Delta R$",
     }
+    
+    # 默认 bins 逻辑（兼容性：如果特征不在字典中，使用自动 bins）
+    def get_bins_for_feature(feat_name):
+        """获取特征的 bins，如果不在字典中则使用默认值"""
+        if feat_name in bins:
+            return bins[feat_name]
+        else:
+            # 默认使用自动 bins（基于数据范围）
+            logger.warning(f"Feature {feat_name} not in bins dictionary, using auto bins")
+            # 尝试从 isolation_data 获取数据范围
+            if feat_name in isolation_data:
+                data_min = np.min(isolation_data[feat_name])
+                data_max = np.max(isolation_data[feat_name])
+                # 根据数据范围选择合适的 bins
+                if data_min >= 0 and data_max > 10:
+                    # 正数，较大范围，使用线性 bins
+                    return np.linspace(data_min, data_max * 1.1, nbins)
+                elif data_min < 0:
+                    # 包含负数，使用线性 bins
+                    return np.linspace(data_min * 1.1, data_max * 1.1, nbins)
+                else:
+                    # 小范围正数，使用 logspace
+                    return np.logspace(np.log10(max(data_min, 1e-6)), np.log10(max(data_max, 1e-6)), nbins)
+            else:
+                # 如果连 isolation_data 都没有，使用默认线性 bins
+                return np.linspace(0, 100, nbins)
+    
+    def get_label_for_feature(feat_name):
+        """获取特征的标签，如果不在字典中则使用特征名"""
+        if feat_name in labels:
+            return labels[feat_name]
+        else:
+            # 默认使用特征名（首字母大写，下划线替换为空格）
+            return feat_name.replace("_", " ").title()
     
     # 使用 newplot 创建符合论文标准的图形（与原始代码完全一致）
     fig, ax = newplot("column", width=9, height=3, subplot_array=(1, n_features))
     
     # 绘制反隔离切割前的数据（与原始代码完全一致）
     for i_feat in range(n_features):
-        feature = isolation_data[feature_set[i_feat]]
+        feat_name = feature_set[i_feat]
+        if feat_name not in isolation_data:
+            logger.warning(f"Feature {feat_name} not found in isolation_data, skipping")
+            continue
+        
+        feature = isolation_data[feat_name]
         label_string = "Pre Anti-Isolation Cut"
+        
+        # 使用 get_bins_for_feature 获取 bins（支持兼容性）
+        feat_bins = get_bins_for_feature(feat_name)
         
         ax[i_feat].hist(
             feature,
-            bins=bins[feature_set[i_feat]],
+            bins=feat_bins,
             lw=1.0,
             histtype="step",
             color="black",
@@ -316,9 +376,13 @@ def plot_features(
         for i_feat in range(n_features):
             feat_name = feature_set[i_feat]
             if feat_name not in filtered_features:
+                logger.warning(f"Feature {feat_name} not found in filtered_features for FPR {threshold:.3f}, skipping")
                 continue  # 跳过缺失的特征
             
             label_string = str(round(100*threshold, 2)) + r"$\%$ FPR"
+            
+            # 使用 get_bins_for_feature 获取 bins（支持兼容性）
+            feat_bins = get_bins_for_feature(feat_name)
             
             # 计算白色填充颜色（与原始代码一致）
             white_color = (np.array([4, 4, 4]) + colors[t]) / 5
@@ -326,7 +390,7 @@ def plot_features(
             # 绘制轮廓（与原始代码一致）
             ax[i_feat].hist(
                 filtered_features[feat_name],
-                bins=bins[feat_name],
+                bins=feat_bins,
                 lw=1.5,
                 histtype="step",
                 color=colors[t],
@@ -336,7 +400,7 @@ def plot_features(
             # 绘制填充（与原始代码一致）
             ax[i_feat].hist(
                 filtered_features[feat_name],
-                bins=bins[feat_name],
+                bins=feat_bins,
                 lw=1.5,
                 histtype="stepfilled",
                 color=white_color,
@@ -344,16 +408,37 @@ def plot_features(
             )
             ax[i_feat].set_yscale("log")
             
-            # 设置 x 轴（与原始代码一致）
-            if i_feat == 0:
+            # 设置 x 轴（与原始代码一致，根据特征类型自适应）
+            # 定义哪些特征使用 log scale（与原始代码的 plot_log 字典一致）
+            log_scale_features = ["mu0_ip3d", "mu1_ip3d", "mu0_iso04", "mu1_iso04"]
+            
+            # 对于 dimu_pt，使用固定范围和线性 scale
+            if feat_name == "dimu_pt":
                 ax[i_feat].set_xlim(10, 150)
                 ax[i_feat].set_xticks([0, 50, 100, 150])
-            
-            if i_feat in [1, 2]:
+                ax[i_feat].set_xscale("linear")
+            # 对于 IP3D，使用 log scale
+            elif feat_name in ["mu0_ip3d", "mu1_ip3d"]:
                 ax[i_feat].set_xscale("log")
                 ax[i_feat].set_xticks([1e-3, 1e-2, 1e-1])
+            # 对于 iso04，根据原始代码使用 log scale（虽然范围是 [0, 1]）
+            elif feat_name in ["mu0_iso04", "mu1_iso04"]:
+                ax[i_feat].set_xscale("log")
+                # iso04 的范围是 [0, 1]，但原始代码使用 logscale，我们保持一致
+                # 如果数据范围太小，可能需要调整
+            # 对于其他特征，根据 bins 类型决定
+            else:
+                # 如果 bins 是 logspace，使用 log scale
+                if np.all(np.diff(feat_bins) > 0) and feat_bins[0] > 0:
+                    # 检查是否是 logspace（相邻比值的方差较小）
+                    ratios = np.diff(feat_bins) / feat_bins[:-1]
+                    if np.std(ratios) < 0.1:  # 近似等比例，可能是 logspace
+                        ax[i_feat].set_xscale("log")
+                else:
+                    ax[i_feat].set_xscale("linear")
             
-            ax[i_feat].set_xlabel(labels[feat_name])
+            # 使用 get_label_for_feature 获取标签（支持兼容性）
+            ax[i_feat].set_xlabel(get_label_for_feature(feat_name))
             ax[i_feat].set_ylim(5e-1, 5e4)
             ax[i_feat].tick_params()
             
@@ -948,9 +1033,8 @@ def plot_variations(
     bins = [8, 12, 16]
     percentages = [1.1, 1.5, 2.3]
     
-    # 过滤 FPR >= 0.99 的点（与 evaluate.py 中的逻辑一致）
-    mask = fpr_thresholds_finegrained < 0.99
-    fpr_filtered = fpr_thresholds_finegrained[mask]
+    # 使用所有FPR阈值（包括FPR=1.0，与原始代码一致）
+    fpr_filtered = fpr_thresholds_finegrained
     
     # 绘制所有变体
     for i, fit in enumerate(fits):
@@ -966,15 +1050,21 @@ def plot_variations(
             else:
                 SIG_observed = sigs
             
-            # 确保长度匹配（sigs 应该已经过滤了 FPR >= 0.99）
+            # 确保长度匹配（应该与fpr_thresholds_finegrained一致）
             if len(SIG_observed) != len(fpr_filtered):
-                # 如果长度不匹配，尝试对齐
-                if len(SIG_observed) == len(fpr_thresholds_finegrained) - 1:
-                    # sigs 已经跳过了 FPR >= 0.99，使用过滤后的 FPR
-                    pass
+                logger.warning(f"Length mismatch for {key}: sigs={len(SIG_observed)}, fpr={len(fpr_filtered)}")
+                # 如果长度不匹配，尝试截断或填充
+                if len(SIG_observed) < len(fpr_filtered):
+                    # 如果sigs较短，可能是旧数据（跳过了FPR>=0.99），使用对应的FPR
+                    if len(SIG_observed) == len(fpr_thresholds_finegrained) - 1:
+                        # 旧数据跳过了FPR=1.0，需要过滤FPR
+                        mask = fpr_thresholds_finegrained < 1.0
+                        fpr_filtered = fpr_thresholds_finegrained[mask]
+                    else:
+                        continue
                 else:
-                    logger.warning(f"Length mismatch for {key}: sigs={len(SIG_observed)}, fpr={len(fpr_filtered)}")
-                    continue
+                    # 如果sigs较长，截断
+                    SIG_observed = SIG_observed[:len(fpr_filtered)]
             
             p_values = inverse_quantile(SIG_observed)
             

@@ -57,7 +57,7 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=str,
-        help="Output directory for figures (default: outputs/{dataset_id}/figures)",
+        help="Output directory for figures (default: {config.output_dir}/figures, based on analysis_keywords.name)",
     )
     parser.add_argument(
         "--fit-type",
@@ -92,7 +92,8 @@ def main():
     if args.output_dir:
         output_dir = Path(args.output_dir)
     else:
-        output_dir = Path("outputs") / config.dataset_id / "figures"
+        # 使用 config.output_dir（基于 analysis_keywords.name）而不是 dataset_id
+        output_dir = config.output_dir / "figures"
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # 确定拟合函数
@@ -113,7 +114,8 @@ def main():
         eval_path = Path(args.evaluation_results)
     else:
         # 自动查找最新的评估结果
-        eval_dir = Path("outputs") / config.dataset_id / "evaluation"
+        # 使用 config.output_dir（基于 analysis_keywords.name）而不是 dataset_id
+        eval_dir = config.output_dir / "evaluation"
         eval_files = list(eval_dir.glob("bump_hunt_results_seed*.pkl"))
         if not eval_files:
             raise FileNotFoundError(f"No evaluation results found in {eval_dir}")

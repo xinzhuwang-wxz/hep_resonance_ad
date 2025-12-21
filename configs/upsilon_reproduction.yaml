@@ -150,8 +150,10 @@ evaluation:
   bootstrap_stop: 100
   background_fit_degree: 5  # 背景拟合的多项式阶数
 
-# BDT配置（用于likelihood ratio学习）
+# XGBoost/BDT配置（用于likelihood ratio学习）
+# 默认使用XGBoost（优先，更稳定）
 bdt:
+  classifier_type: "xgboost"  # 分类器类型："xgboost" (推荐) 或 "bdt"
   n_estimators: 100      # 每棵树的估计器数量
   max_depth: 3           # 树的最大深度
   learning_rate: 0.1     # 学习率
