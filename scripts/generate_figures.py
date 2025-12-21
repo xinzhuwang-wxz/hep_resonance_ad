@@ -301,7 +301,9 @@ def main():
                                 model_path = None
                         
                         if model_path and model_path.exists():
-                            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                            from resonance_ad.core import get_device, get_device_info
+                            logger.info(get_device_info())
+                            device = get_device()
                             model_config_path = config.working_dir / "configs" / training_config.get("config_file", "CATHODE_8.yml")
                             num_features = len(feature_set) - 1  # 不包括mass
                             

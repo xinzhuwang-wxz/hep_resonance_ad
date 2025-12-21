@@ -132,7 +132,9 @@ def main():
     )
     
     # 设备
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    from resonance_ad.core import get_device, get_device_info
+    logger.info(get_device_info())
+    device = get_device()
     logger.info(f"Using device: {device}")
     
     # 创建模型
